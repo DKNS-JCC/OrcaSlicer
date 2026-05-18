@@ -295,6 +295,68 @@ wxWebView* WebView::CreateWebView(wxWindow * parent, wxString const & url)
         webView->Create(parent, wxID_ANY, url2, wxDefaultPosition, wxDefaultSize, wxBORDER_NONE);
         webView->SetUserAgent(wxString::Format("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) BBL-Slicer/v%s (%s) BBL-Language/%s",
                                                Slic3r::GUI::wxGetApp().get_bbl_client_version(), Slic3r::GUI::wxGetApp().dark_mode() ? "dark" : "light", language_code.mb_str()));
+
+#ifdef __linux__
+        // Workaround for crash in WebKitGTK when loading Fluidd < v1.37.0 or Mainsail < v2.16.1.
+        // Those frontends use vue-resize, which injects a hidden <object> element for resize
+        // detection. This corrupts the heap in WebKitGTK regardless of GPU or environment variables.
+        // The fix patches document.createElement at document-start to neutralize the broken <object>
+        // hack, and replaces addResizeListener/removeResizeListener with a native ResizeObserver shim.
+        // See: https://github.com/OrcaSlicer/OrcaSlicer/issues/7210
+        webView->AddUserScript(
+            "(function() {"
+            "  'use strict';"
+            "  var _origCreateElement = document.createElement.bind(document);"
+            "  document.createElement = function(tag) {"
+            "    if (typeof tag === 'string' && tag.toLowerCase() === 'object') {"
+            "      var el = _origCreateElement('div');"
+            "      el.setAttribute('data-vr-shim', '1');"
+            "      Object.defineProperty(el, 'contentDocument', { get: function() { return null; } });"
+            "      Object.defineProperty(el, 'contentWindow', { get: function() { return null; } });"
+            "      var _origAddEL = el.addEventListener.bind(el);"
+            "      el.addEventListener = function(type, fn, opts) {"
+            "        if (type === 'load') return;"
+            "        return _origAddEL(type, fn, opts);"
+            "      };"
+            "      return el;"
+            "    }"
+            "    return _origCreateElement(tag);"
+            "  };"
+            "  var _roMap = typeof WeakMap !== 'undefined' ? new WeakMap() : null;"
+            "  function _addResizeListener(el, fn) {"
+            "    if (!el || !fn) return;"
+            "    if (typeof ResizeObserver !== 'undefined' && _roMap) {"
+            "      if (!_roMap.has(el)) { var observers = []; _roMap.set(el, observers); }"
+            "      var ro = new ResizeObserver(function(entries) { fn(); });"
+            "      ro.observe(el);"
+            "      _roMap.get(el).push({ fn: fn, ro: ro });"
+            "    }"
+            "  }"
+            "  function _removeResizeListener(el, fn) {"
+            "    if (!el || !_roMap || !_roMap.has(el)) return;"
+            "    var observers = _roMap.get(el);"
+            "    for (var i = observers.length - 1; i >= 0; i--) {"
+            "      if (observers[i].fn === fn) {"
+            "        observers[i].ro.disconnect();"
+            "        observers.splice(i, 1);"
+            "      }"
+            "    }"
+            "  }"
+            "  window.__vueResizePatch = {"
+            "    addResizeListener: _addResizeListener,"
+            "    removeResizeListener: _removeResizeListener"
+            "  };"
+            "  var _defineOrig = typeof define !== 'undefined' ? define : null;"
+            "  Object.defineProperty(window, 'define', {"
+            "    configurable: true,"
+            "    get: function() { return _defineOrig; },"
+            "    set: function(fn) { _defineOrig = fn; }"
+            "  });"
+            "  console.log('[vr-fix] vue-resize WebKitGTK patch active');"
+            "})();",
+            wxWEBVIEW_INJECT_AT_DOCUMENT_START
+        );
+#endif
 #endif
 #ifdef __WXMAC__
         WKWebView * wkWebView = (WKWebView *) webView->GetNativeBackend();
