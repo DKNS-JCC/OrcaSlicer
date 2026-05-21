@@ -1832,10 +1832,26 @@ static std::vector<std::vector<ExPolygons>> merge_segmented_layers(const std::ve
     segmented_regions_merged.assign(num_layers, std::vector<ExPolygons>(num_facets_states - 1));
     assert(!top_and_bottom_layers.size() || num_facets_states == top_and_bottom_layers.size());
 
+    // Diagnostic: check initial state of second element (index 1) after assign
+    {
+        const size_t check_idx = num_facets_states - 2; // index of last element in inner vector
+        const auto &inner = segmented_regions_merged[0];
+        BOOST_LOG_TRIVIAL(info)
+            << "merge_segmented_layers after assign"
+            << " inner_size=" << inner.size()
+            << " elem[" << check_idx << "].addr=" << &inner[check_idx]
+            << " data=" << inner[check_idx].data()
+            << " size=" << inner[check_idx].size()
+            << " capacity=" << inner[check_idx].capacity()
+            << " top_and_bottom_size=" << top_and_bottom_layers.size()
+            << " num_facets_states=" << num_facets_states;
+    }
+
     BOOST_LOG_TRIVIAL(debug) << "Print object segmentation - Merging segmented layers in parallel - Begin";
     tbb::parallel_for(tbb::blocked_range<size_t>(0, num_layers), [&segmented_regions, &top_and_bottom_layers, &segmented_regions_merged, &num_facets_states, &throw_on_cancel_callback](const tbb::blocked_range<size_t> &range) {
         for (size_t layer_idx = range.begin(); layer_idx < range.end(); ++layer_idx) {
             assert(segmented_regions[layer_idx].size() == num_facets_states);
+            const size_t last_elem_idx = num_facets_states - 2; // index = num_facets_states - 1 - 1
             // Zero is skipped because it is the default color of the volume
             for (size_t extruder_id = 1; extruder_id < num_facets_states; ++extruder_id) {
                 throw_on_cancel_callback();
@@ -1860,6 +1876,39 @@ static std::vector<std::vector<ExPolygons>> merge_segmented_layers(const std::ve
                     if (!was_top_and_bottom_empty)
                         segmented_regions_merged[layer_idx][extruder_id - 1] = offset2_ex(union_ex(segmented_regions_merged[layer_idx][extruder_id - 1]), float(SCALED_EPSILON), -float(SCALED_EPSILON));
                 }
+
+                // Diagnostic: after processing this extruder_id, check the corresponding merged element
+                const size_t merged_idx = extruder_id - 1;
+                const auto &elem = segmented_regions_merged[layer_idx][merged_idx];
+                if (elem.size() > 1000000) {
+                    BOOST_LOG_TRIVIAL(error)
+                        << "merge_segmented_layers CORRUPTION after extruder_id=" << extruder_id
+                        << " layer_idx=" << layer_idx
+                        << " merged_idx=" << merged_idx
+                        << " elem_addr=" << &elem
+                        << " data=" << elem.data()
+                        << " size=" << elem.size()
+                        << " capacity=" << elem.capacity()
+                        << " top_and_bottom_empty=" << top_and_bottom_layers.empty()
+                        << " tb_extruder_exists=" << (extruder_id < top_and_bottom_layers.size())
+                        << " segmented_src_data=" << segmented_regions[layer_idx][extruder_id].data()
+                        << " segmented_src_size=" << segmented_regions[layer_idx][extruder_id].size();
+                }
+            }
+
+            // Diagnostic: final state of the last element after all extruders processed
+            const auto &last_elem = segmented_regions_merged[layer_idx][last_elem_idx];
+            if (last_elem.size() > 1000000 || (last_elem.size() == 0 && last_elem.data() != nullptr && reinterpret_cast<uintptr_t>(last_elem.data()) < 0x1000)) {
+                BOOST_LOG_TRIVIAL(error)
+                    << "merge_segmented_layers BAD FINAL STATE"
+                    << " layer_idx=" << layer_idx
+                    << " last_elem_idx=" << last_elem_idx
+                    << " addr=" << &last_elem
+                    << " data=" << last_elem.data()
+                    << " size=" << last_elem.size()
+                    << " capacity=" << last_elem.capacity()
+                    << " inner_vec_addr=" << &segmented_regions_merged[layer_idx]
+                    << " inner_vec_size=" << segmented_regions_merged[layer_idx].size();
             }
         }
     }); // end of parallel_for
@@ -2195,7 +2244,7 @@ std::vector<std::vector<ExPolygons>> segmentation_by_painting(const PrintObject 
 
 // Returns multi-material segmentation based on painting in multi-material segmentation gizmo
 std::vector<std::vector<ExPolygons>> multi_material_segmentation_by_painting(const PrintObject &print_object, const std::function<void()> &throw_on_cancel_callback) {
-    const size_t num_facets_states  = print_object.print()->config().filament_colour.size() + 1;
+    const size_t num_facets_states  = print_object.print()->config().filament_diameter.size() + 1;
     const float  max_width          = float(print_object.config().mmu_segmented_region_max_width.value);
     const float  interlocking_depth = float(print_object.config().mmu_segmented_region_interlocking_depth.value);
     const bool   interlocking_beam  = print_object.config().interlocking_beam.value;

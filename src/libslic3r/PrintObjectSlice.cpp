@@ -873,7 +873,6 @@ static inline void apply_mm_segmentation(PrintObject &print_object, ThrowOnCance
             double       z              = print_object.get_layer(int(range.begin()))->slice_z;
             auto         it_layer_range = layer_range_first(layer_ranges, z);
             // BBS
-            const size_t num_extruders = print_object.print()->config().filament_diameter.size();
 
             struct ByExtruder {
                 ExPolygons  expolygons;
@@ -893,12 +892,30 @@ static inline void apply_mm_segmentation(PrintObject &print_object, ThrowOnCance
                 it_layer_range = layer_range_next(layer_ranges, it_layer_range, layer.slice_z);
                 const PrintObjectRegions::LayerRangeRegions &layer_range = *it_layer_range;
                 // Gather per extruder expolygons.
+                const size_t num_extruders = segmentation[layer_id].size();
                 by_extruder.assign(num_extruders, ByExtruder());
                 by_region.assign(layer.region_count(), ByRegion());
                 bool layer_split = false;
                 for (size_t extruder_id = 0; extruder_id < num_extruders; ++ extruder_id) {
                     ByExtruder &region = by_extruder[extruder_id];
+                    const auto &src_expolys = segmentation[layer_id][extruder_id];
+                    BOOST_LOG_TRIVIAL(info)
+                        << "apply_mm_segmentation before move"
+                        << " layer_id=" << layer_id
+                        << " extruder_id=" << extruder_id
+                        << " src_addr=" << &src_expolys
+                        << " src_data=" << src_expolys.data()
+                        << " src_size=" << src_expolys.size()
+                        << " src_capacity=" << src_expolys.capacity();
                     append(region.expolygons, std::move(segmentation[layer_id][extruder_id]));
+                    BOOST_LOG_TRIVIAL(info)
+                        << "apply_mm_segmentation after move"
+                        << " layer_id=" << layer_id
+                        << " extruder_id=" << extruder_id
+                        << " dst_addr=" << &region.expolygons
+                        << " dst_data=" << region.expolygons.data()
+                        << " dst_size=" << region.expolygons.size()
+                        << " dst_capacity=" << region.expolygons.capacity();
                     if (! region.expolygons.empty()) {
                         region.bbox = get_extents(region.expolygons);
                         layer_split = true;
