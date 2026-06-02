@@ -520,3 +520,87 @@ Planned enhancements beyond v1:
 - **More widget ids** — the process combo, the add/import button, and the
   Prepare/Preview tabs once they expose stable windows.
 - An **MCP wrapper** to expose the automation surface to model-context tooling.
+
+---
+
+## Verification (v1)
+
+This section records the final regression gate for the v1 feature: confirmation
+that the protocol core is covered by unit tests, that the existing test suites
+are unaffected, and that the **disabled path (automation OFF, the default) is a
+true no-op** — zero new threads, zero socket binds, zero allocations, and zero
+behavior change.
+
+### Unit-suite results (Release, Windows / MSVC, Ninja Multi-Config)
+
+| Suite | Result |
+|---|---|
+| `automation` (protocol core) | **32 / 32 passed** |
+| `libslic3r` (most affected by the additive `PrintConfig.cpp` CLI options) | **99 / 99 passed** |
+| `fff_print` | **14 / 14 passed** |
+| `libnest2d` | **14 / 14 passed** |
+| `sla_print` | **21 / 21 passed** |
+| `slic3rutils` | 3 / 5 passed — 2 pre-existing `[OrcaCloudServiceAgent]` SEGFAULTs, **unrelated to automation** (see note) |
+
+> The two `slic3rutils` failures are `Orca cloud flat/nested session resolves
+> display name consistently`. They exercise `Slic3r::OrcaCloudServiceAgent`, which
+> the automation branch does **not** touch (verified via `git diff --stat
+> main...HEAD` — no change to `src/slic3r/Utils/OrcaCloudServiceAgent.*` or
+> `tests/slic3rutils/*`). They are pre-existing and not a regression introduced by
+> this feature.
+
+### Static disabled-path audit (the core regression guarantee)
+
+Verified by code reading that with no `--automation-server` flag:
+
+- **Flag defaults off.** `m_automation_port` defaults to `0`
+  (`src/slic3r/GUI/GUI_App.hpp:249`); `is_automation_enabled()` returns
+  `m_automation_port > 0` (`GUI_App.hpp:386`) → `false` by default.
+- **No server / thread / socket.** `post_init()` calls
+  `start_automation_server()` **only** when
+  `init_params->automation_port > 0` (`src/slic3r/GUI/GUI_App.cpp:737-740`), and
+  `start_automation_server()` itself early-returns when `m_automation_port <= 0`
+  (`GUI_App.cpp:7097`). The backend / dispatcher / beast server objects are
+  constructed nowhere else → no `orca_automation` thread and no localhost bind
+  when the flag is absent.
+- **Recording hooks short-circuit.** `ImGuiWrapper::automation_record_last_item`
+  has as its **first statement** `if (!wxGetApp().is_automation_enabled())
+  return;` (`src/slic3r/GUI/ImGuiWrapper.cpp:576-577`) — a single bool check, no
+  `ImGuiItemRecord` allocation and no `ImGuiItemTable` access on the disabled
+  path. In `ImGuiWrapper::render()` the window-enumeration loop and
+  `swap_frame()` are fully wrapped in `if (wxGetApp().is_automation_enabled())`
+  (`ImGuiWrapper.cpp:599-611`); when off, `render()` is its original
+  `ImGui::Render()` + `render_draw_data()` plus one bool check.
+- **Instrumentation is inert.** The ~7 `set_automation_id(...)` calls
+  (`MainFrame.cpp:1330,1389,1841,1842`; `Plater.cpp:1772,2172,5068`) only store a
+  pointer into a static registry and bind a `wxEVT_DESTROY` pruning handler
+  (`src/slic3r/GUI/Automation/AutomationRegistry.cpp:24-36`). The registry is
+  **read** only via `window_for_automation_id` / `automation_id_of`, which are
+  called solely by the backend while the server is running → harmless when off.
+- **CLI options are purely additive.** `automation_server` (coBool, default
+  `false`) and `automation_server_port` (coInt, default `13619`) are new `add()`
+  entries appended after `enable_timelapse`
+  (`src/libslic3r/PrintConfig.cpp:10794-10805`); no existing option is changed.
+  `GUI_InitParams::automation_port` defaults to `0`
+  (`src/slic3r/GUI/GUI_Init.hpp:37`) and is set only when `--automation-server`
+  is supplied (`src/OrcaSlicer.cpp:1345-1348`).
+
+**Conclusion:** with automation OFF (the default), the feature allocates nothing
+and changes nothing — the only added cost on any hot path is a single boolean
+comparison.
+
+### Deferred manual runtime checks (require a display / Xvfb)
+
+These need a live GUI and cannot be run headlessly in CI; they are the manual
+acceptance steps:
+
+1. Launch **without** `--automation-server` → `curl http://127.0.0.1:13619/`
+   fails to connect (no listener); no `orca_automation` thread exists.
+2. Launch **with** `--automation-server --automation-server-port=13619` →
+   `GET /` returns the health text; `POST /jsonrpc {"method":"automation.version"}`
+   returns version / protocol / capabilities; `widget.get {"target":{"id":"btn_slice"}}`
+   returns a node with a sensible screen rect.
+3. Interactive sanity: open a gizmo / move sliders with automation OFF → no
+   visual or behavior change.
+
+See `tools/automation/example_slice.py` for the runnable end-to-end path.
