@@ -6,6 +6,9 @@
 #include "GUI_ObjectList.hpp"
 #include "slic3r/GUI/UserManager.hpp"
 #include "slic3r/GUI/TaskManager.hpp"
+#include "slic3r/GUI/Automation/AutomationServer.hpp"
+#include "slic3r/GUI/Automation/WxUiBackend.hpp"
+#include "slic3r/GUI/Automation/JsonRpcDispatcher.hpp"
 #include "format.hpp"
 #include "libslic3r_version.h"
 #include "Downloader.hpp"
@@ -729,6 +732,12 @@ void GUI_App::post_init()
     assert(initialized());
     if (! this->initialized())
         throw Slic3r::RuntimeError("Calling post_init() while not yet initialized");
+
+    // UI automation: start the localhost server only when --automation-server set a port.
+    if (this->init_params != nullptr && this->init_params->automation_port > 0) {
+        m_automation_port = this->init_params->automation_port;
+        start_automation_server();
+    }
 
     m_open_method = "double_click";
     bool switch_to_3d = false;
@@ -2464,6 +2473,7 @@ bool GUI_App::OnInit()
 int GUI_App::OnExit()
 {
     stop_http_server();
+    stop_automation_server();
     stop_sync_user_preset();
 
     if (m_device_manager) {
@@ -7080,6 +7090,33 @@ void GUI_App::start_http_server(int port, const std::string& provider)
 void GUI_App::stop_http_server()
 {
     m_http_server.stop();
+}
+
+void GUI_App::start_automation_server()
+{
+    if (m_automation_port <= 0) return;            // disabled
+    if (m_automation_server)    return;            // already running
+    using namespace Slic3r::GUI::Automation;
+    m_automation_backend.reset(new WxUiBackend());
+    m_automation_dispatcher.reset(new JsonRpcDispatcher(*m_automation_backend));
+    m_automation_server.reset(new AutomationServer((unsigned short)m_automation_port));
+    JsonRpcDispatcher* disp = m_automation_dispatcher.get();
+    m_automation_server->set_handler(
+        [disp](const std::string& body) { return disp->handle_request(body); });
+    m_automation_server->set_health_text(
+        std::string("OrcaSlicer automation server v") + kAutomationVersion);
+    m_automation_server->start();
+    BOOST_LOG_TRIVIAL(warning)
+        << "UI automation server ENABLED on 127.0.0.1:" << m_automation_port
+        << " (input injection is active)";
+}
+
+void GUI_App::stop_automation_server()
+{
+    if (m_automation_server) m_automation_server->stop();
+    m_automation_server.reset();
+    m_automation_dispatcher.reset();
+    m_automation_backend.reset();
 }
 
 void GUI_App::switch_staff_pick(bool on)

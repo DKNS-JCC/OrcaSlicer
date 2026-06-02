@@ -86,6 +86,14 @@ class ModelMallDialog;
 class PingCodeBindDialog;
 class NetworkErrorDialog;
 
+// UI automation (opt-in). Forward declarations so GUI_App can own the stack
+// by unique_ptr without pulling the Automation headers into this header.
+namespace Automation {
+    class AutomationServer;
+    class WxUiBackend;
+    class JsonRpcDispatcher;
+}
+
 
 enum FileType
 {
@@ -335,6 +343,11 @@ private:
     HttpServer       m_http_server;
     bool             m_show_gcode_window{true};
     boost::thread    m_check_network_thread;
+
+    // --- UI automation (opt-in; off unless --automation-server) ---
+    std::unique_ptr<Slic3r::GUI::Automation::AutomationServer>   m_automation_server;
+    std::unique_ptr<Slic3r::GUI::Automation::WxUiBackend>        m_automation_backend;
+    std::unique_ptr<Slic3r::GUI::Automation::JsonRpcDispatcher>  m_automation_dispatcher;
 public:
     //try again when subscription fails
     void            on_start_subscribe_again(std::string dev_id);
@@ -371,6 +384,10 @@ public:
     // NOTE: Task 17 extends the automation lifecycle (server/backend) around this
     // accessor; here we only add the minimal flag/accessor the hooks depend on.
     bool is_automation_enabled() const { return m_automation_port > 0; }
+    // UI automation lifecycle: wires WxUiBackend -> JsonRpcDispatcher -> AutomationServer
+    // and starts/stops the localhost server. Both no-op when automation is off.
+    void start_automation_server();
+    void stop_automation_server();
     bool is_recreating_gui() const { return m_is_recreating_gui; }
     std::string logo_name() const { return is_editor() ? "OrcaSlicer" : "OrcaSlicer-gcodeviewer"; }
 
