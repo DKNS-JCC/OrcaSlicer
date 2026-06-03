@@ -257,3 +257,13 @@ TEST_CASE("file.open backend load failure -> 1007", "[automation][rpc]") {
         {"params",{{"paths","C:/abs/a.stl"}}}});
     CHECK(resp.at("error").at("code") == kErrLoadFailed);
 }
+
+TEST_CASE("automation.version capabilities include file.open", "[automation][rpc]") {
+    MockUiBackend mock;
+    JsonRpcDispatcher d(mock);
+    const json resp = d.dispatch({{"jsonrpc","2.0"},{"id",1},{"method","automation.version"}});
+    const auto& caps = resp.at("result").at("capabilities");
+    bool found = false;
+    for (const auto& c : caps) if (c == "file.open") found = true;
+    CHECK(found);
+}

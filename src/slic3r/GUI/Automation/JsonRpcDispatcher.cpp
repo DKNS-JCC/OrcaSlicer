@@ -195,7 +195,8 @@ nlohmann::json JsonRpcDispatcher::m_version(const nlohmann::json&) {
              {"protocol", "2.0"},
              {"capabilities", nlohmann::json::array({
                  "tree.dump","tree.find","widget.get","input.click","input.type",
-                 "input.key","sync.wait_for","app.state","screenshot.window" })} };
+                 "input.key","sync.wait_for","app.state","screenshot.window",
+                 "file.open" })} };
 }
 
 nlohmann::json JsonRpcDispatcher::dispatch(const nlohmann::json& request) {
