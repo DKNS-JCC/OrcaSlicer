@@ -101,6 +101,13 @@ public:
     // Throws AutomationError(kErrLoadFailed) when nothing loads. Header stays wx-free:
     // the concrete LoadStrategy is chosen inside WxUiBackend, not exposed here.
     virtual int open_files(const std::vector<std::string>& paths) = 0;
+
+    // Select a top-level view/tab by stable name (e.g. "prepare", "preview", "home",
+    // "device", "project", "calibration", "multi_device") on the GUI thread. Returns
+    // the resulting tab index. Throws AutomationError(kErrNotFound) when the named
+    // view is unknown or not available in the current layout. The wx-specific
+    // name->tab mapping lives in WxUiBackend/MainFrame, not here.
+    virtual int select_view(const std::string& view) = 0;
 };
 
 }}} // namespace Slic3r::GUI::Automation

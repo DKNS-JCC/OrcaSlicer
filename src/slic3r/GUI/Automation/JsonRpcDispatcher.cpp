@@ -154,6 +154,21 @@ std::vector<std::string> parse_paths(const nlohmann::json& params) {
         throw AutomationError(kInvalidParams, "'paths' is empty");
     return out;
 }
+
+// "view" must be a non-empty string naming a top-level tab. The name->tab mapping
+// itself lives in the wx backend, so this only validates shape; throws kInvalidParams
+// when view is missing, not a string, or empty.
+std::string parse_view(const nlohmann::json& params) {
+    if (!params.is_object() || !params.contains("view"))
+        throw AutomationError(kInvalidParams, "view.select requires 'view'");
+    const auto& v = params.at("view");
+    if (!v.is_string())
+        throw AutomationError(kInvalidParams, "'view' must be a string");
+    std::string name = v.get<std::string>();
+    if (name.empty())
+        throw AutomationError(kInvalidParams, "'view' is empty");
+    return name;
+}
 } // namespace
 
 namespace {
@@ -196,7 +211,7 @@ nlohmann::json JsonRpcDispatcher::m_version(const nlohmann::json&) {
              {"capabilities", nlohmann::json::array({
                  "tree.dump","tree.find","widget.get","input.click","input.type",
                  "input.key","sync.wait_for","app.state","screenshot.window",
-                 "file.open" })} };
+                 "file.open","view.select" })} };
 }
 
 nlohmann::json JsonRpcDispatcher::dispatch(const nlohmann::json& request) {
@@ -222,6 +237,7 @@ nlohmann::json JsonRpcDispatcher::dispatch(const nlohmann::json& request) {
         if (method == "app.state")                 return make_result(id, m_app_state(params));
         if (method == "screenshot.window")         return make_result(id, m_screenshot_window(params));
         if (method == "file.open")                 return make_result(id, m_file_open(params));
+        if (method == "view.select")               return make_result(id, m_view_select(params));
         return make_error(id, kMethodNotFound, "unknown method: " + method);
     } catch (const AutomationError& e) {
         return make_error(id, e.code, e.what());
@@ -375,6 +391,12 @@ nlohmann::json JsonRpcDispatcher::m_file_open(const nlohmann::json& params) {
     const std::vector<std::string> paths = parse_paths(params);
     const int loaded = m_backend.open_files(paths);
     return { {"ok", true}, {"loaded", loaded} };
+}
+
+nlohmann::json JsonRpcDispatcher::m_view_select(const nlohmann::json& params) {
+    const std::string view = parse_view(params);
+    const int index = m_backend.select_view(view);
+    return { {"ok", true}, {"view", view}, {"index", index} };
 }
 
 }}} // namespace

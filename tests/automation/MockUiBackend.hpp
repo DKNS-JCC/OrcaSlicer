@@ -20,6 +20,7 @@ public:
     std::vector<std::vector<KeyChord>> sent_keys;
     int               screenshot_window_count   = 0;
     std::vector<std::vector<std::string>> opened_paths; // paths of each open_files()
+    std::vector<std::string> selected_views;            // view of each select_view()
 
     // Canned outputs (set by tests).
     UiNode   tree;                                  // default tree for dump_tree
@@ -28,6 +29,8 @@ public:
     bool     click_result = true;
     int      open_return_count = 0;     // value open_files() returns
     bool     open_should_fail = false;  // when true, open_files() throws kErrLoadFailed
+    int      select_view_index = 0;     // value select_view() returns
+    bool     select_view_should_fail = false; // when true, select_view() throws kErrNotFound
 
     // Optional: per-call tree provider (overrides `tree` when set).
     std::function<UiNode(int /*call_index*/)> tree_provider;
@@ -58,6 +61,12 @@ public:
         if (open_should_fail)
             throw AutomationError(kErrLoadFailed, "mock load failed");
         return open_return_count;
+    }
+    int      select_view(const std::string& view) override {
+        selected_views.push_back(view);
+        if (select_view_should_fail)
+            throw AutomationError(kErrNotFound, "mock view not found");
+        return select_view_index;
     }
 };
 

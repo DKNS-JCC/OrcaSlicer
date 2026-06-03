@@ -267,3 +267,62 @@ TEST_CASE("automation.version capabilities include file.open", "[automation][rpc
     for (const auto& c : caps) if (c == "file.open") found = true;
     CHECK(found);
 }
+
+TEST_CASE("view.select routes the view name to the backend", "[automation][rpc]") {
+    MockUiBackend mock;
+    mock.select_view_index = 1;
+    JsonRpcDispatcher d(mock);
+    const json resp = d.dispatch({{"jsonrpc","2.0"},{"id",1},{"method","view.select"},
+        {"params",{{"view","prepare"}}}});
+    CHECK(resp.at("result").at("ok") == true);
+    CHECK(resp.at("result").at("view") == "prepare");
+    CHECK(resp.at("result").at("index") == 1);
+    REQUIRE(mock.selected_views.size() == 1);
+    CHECK(mock.selected_views[0] == "prepare");
+}
+
+TEST_CASE("view.select with missing view -> invalid params", "[automation][rpc]") {
+    MockUiBackend mock;
+    JsonRpcDispatcher d(mock);
+    const json resp = d.dispatch({{"jsonrpc","2.0"},{"id",2},{"method","view.select"},
+        {"params", json::object()}});
+    CHECK(resp.at("error").at("code") == kInvalidParams);
+    CHECK(mock.selected_views.empty());
+}
+
+TEST_CASE("view.select with non-string view -> invalid params", "[automation][rpc]") {
+    MockUiBackend mock;
+    JsonRpcDispatcher d(mock);
+    const json resp = d.dispatch({{"jsonrpc","2.0"},{"id",3},{"method","view.select"},
+        {"params",{{"view", 42}}}});
+    CHECK(resp.at("error").at("code") == kInvalidParams);
+    CHECK(mock.selected_views.empty());
+}
+
+TEST_CASE("view.select with empty view -> invalid params", "[automation][rpc]") {
+    MockUiBackend mock;
+    JsonRpcDispatcher d(mock);
+    const json resp = d.dispatch({{"jsonrpc","2.0"},{"id",4},{"method","view.select"},
+        {"params",{{"view",""}}}});
+    CHECK(resp.at("error").at("code") == kInvalidParams);
+    CHECK(mock.selected_views.empty());
+}
+
+TEST_CASE("view.select unavailable view -> not found (1001)", "[automation][rpc]") {
+    MockUiBackend mock;
+    mock.select_view_should_fail = true;
+    JsonRpcDispatcher d(mock);
+    const json resp = d.dispatch({{"jsonrpc","2.0"},{"id",5},{"method","view.select"},
+        {"params",{{"view","calibration"}}}});
+    CHECK(resp.at("error").at("code") == kErrNotFound);
+}
+
+TEST_CASE("automation.version capabilities include view.select", "[automation][rpc]") {
+    MockUiBackend mock;
+    JsonRpcDispatcher d(mock);
+    const json resp = d.dispatch({{"jsonrpc","2.0"},{"id",6},{"method","automation.version"}});
+    const auto& caps = resp.at("result").at("capabilities");
+    bool found = false;
+    for (const auto& c : caps) if (c == "view.select") found = true;
+    CHECK(found);
+}

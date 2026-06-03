@@ -49,6 +49,7 @@ private:
     nlohmann::json m_app_state(const nlohmann::json& params);
     nlohmann::json m_screenshot_window(const nlohmann::json& params);
     nlohmann::json m_file_open(const nlohmann::json& params);
+    nlohmann::json m_view_select(const nlohmann::json& params);
 
     // Resolve a unique, actionable (enabled+visible) node from params["target"].
     // Throws kErrNotFound (missing/ambiguous) or kErrNotActionable (disabled/hidden).
