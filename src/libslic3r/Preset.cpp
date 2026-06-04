@@ -1,4 +1,4 @@
-﻿#include <cassert>
+#include <cassert>
 
 #include "Config.hpp"
 #include "Exception.hpp"
