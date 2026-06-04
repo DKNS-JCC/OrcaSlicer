@@ -60,11 +60,13 @@ jobs:
       - name: Install codegen tools and generate config sources
         run: |
           if [ "$(uname)" = "Linux" ]; then
-            pip3 install grpcio-tools
+            pip3 install grpcio-tools pyyaml
+            python3 tools/run_codegen.py
           else
-            brew install protobuf
+            python3 -m venv /tmp/codegen_venv
+            /tmp/codegen_venv/bin/pip install grpcio-tools pyyaml -q
+            /tmp/codegen_venv/bin/python tools/run_codegen.py
           fi
-          python3 tools/run_codegen.py
         if: runner.os != 'Windows'
         shell: bash
 
