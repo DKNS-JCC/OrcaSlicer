@@ -6825,6 +6825,8 @@ void GUI_App::start_sync_user_preset(bool with_progress_dlg)
             std::vector<std::pair<std::string, std::string>> bundles_to_sync;
             std::unordered_set<std::string> bundles_synced;
 
+            std::unordered_set<std::string> known_available_updates;
+
             bool update_available = false;
             // Sync once immediately, then every 60 seconds.
             while (!t.expired()) {
@@ -6938,8 +6940,11 @@ void GUI_App::start_sync_user_preset(bool with_progress_dlg)
                             BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << __LINE__ << "ORCA : Update thread syncing bundles";
                             int res = sync_bundle(bundle_entry.first, bundle_entry.second);
 
-                            if (!update_available)
-                                update_available = res == 1;
+                            const std::string known_update_key = bundle_entry.first + ":" + bundle_entry.second;
+                            if (res == 1 && known_available_updates.insert(known_update_key).second) {
+                                update_available = true;
+                            }
+
                             // }
                             // Small delay between bundle syncs to avoid overwhelming the server
                             boost::this_thread::sleep_for(boost::chrono::milliseconds(100));
