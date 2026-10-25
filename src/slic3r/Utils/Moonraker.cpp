@@ -4,6 +4,7 @@
 #include <sstream>
 #include <fstream>
 #include <algorithm>
+#include <map>
 
 #include <boost/filesystem.hpp>
 #include <boost/format.hpp>
@@ -265,6 +266,37 @@ bool Moonraker::upload(PrintHostUpload upload_data, ProgressFn progress_fn, Erro
         }
     }
 
+    //ORCA-CFS: the "Use CFS" tick must reach the printer, not only the Tn remap: the printer's
+    //          CFS_ON / CFS_OFF macros (claude_custom.cfg) decide whether START_PRINT, Tn, pause,
+    //          resume and end go through the box. Unticked = filament already in the toolhead.
+    //          Sent before the upload because the upload itself starts the print (print=true).
+    const std::string cfs = upload_data.extended("cfs_enabled");
+    if (want_start && !cfs.empty()) {
+        // Body is mandatory: Http with an empty POST body falls back to the file read callback and crashes.
+        pt::ptree script_tree;
+        script_tree.put("script", cfs == "1" ? "CFS_ON" : "CFS_OFF");
+        std::ostringstream script_ss;
+        pt::write_json(script_ss, script_tree, /*pretty=*/false);
+        auto cfs_http = Http::post(make_url("printer/gcode/script"));
+        set_auth(cfs_http);
+        bool ok = true;
+        wxString cfs_msg;
+        cfs_http.header("Content-Type", "application/json")
+            .set_post_body(script_ss.str())
+            .on_error([&](std::string body, std::string error, unsigned status) {
+                ok = false;
+                cfs_msg = format_error(body, error, status);
+            })
+#ifdef WIN32
+            .ssl_revoke_best_effort(m_ssl_revoke_best_effort)
+#endif
+            .perform_sync();
+        if (!ok) {
+            error_fn(std::move(cfs_msg));
+            return false;
+        }
+    }
+
     std::string url = make_url("server/files/upload");
     bool result = true;
     std::string uploaded_path;
@@ -351,34 +383,6 @@ bool Moonraker::upload(PrintHostUpload upload_data, ProgressFn progress_fn, Erro
     // printer cannot start it, the error from this request is what the user sees.
     if (want_start && !uploaded_path.empty() && !moonraker_started_print) {
         wxString start_msg;
-        //ORCA-CFS: the "Use CFS" tick must reach the printer, not only the Tn remap: the printer's
-        //          CFS_ON / CFS_OFF macros (claude_custom.cfg) decide whether START_PRINT, Tn, pause,
-        //          resume and end go through the box. Unticked = filament already in the toolhead.
-        const std::string cfs = upload_data.extended("cfs_enabled");
-        if (!cfs.empty()) {
-            // Body is mandatory: Http with an empty POST body falls back to the file read callback and crashes.
-            pt::ptree script_tree;
-            script_tree.put("script", cfs == "1" ? "CFS_ON" : "CFS_OFF");
-            std::ostringstream script_ss;
-            pt::write_json(script_ss, script_tree, /*pretty=*/false);
-            auto http = Http::post(make_url("printer/gcode/script"));
-            set_auth(http);
-            bool ok = true;
-            http.header("Content-Type", "application/json")
-                .set_post_body(script_ss.str())
-                .on_error([&](std::string body, std::string error, unsigned status) {
-                    ok = false;
-                    start_msg = format_error(body, error, status);
-                })
-#ifdef WIN32
-                .ssl_revoke_best_effort(m_ssl_revoke_best_effort)
-#endif
-                .perform_sync();
-            if (!ok) {
-                error_fn(std::move(start_msg));
-                return false;
-            }
-        }
         if (!start_print(start_msg, uploaded_path)) {
             error_fn(std::move(start_msg));
             return false;
@@ -468,17 +472,18 @@ bool Moonraker::detect_cfs_object(std::string& object_name_out, wxString& msg) c
 
 bool Moonraker::parse_cfs_slots(const std::string& object_name, const std::string& body, std::vector<CFSSlot>& slots) const
 {
-    //ORCA-CFS: Parse the Creality `box` object captured by cfs-moonraker-probe.sh. Shape:
+    //ORCA-CFS: Parse the Creality `box` object. Shape:
     //   result.status.box = {
-    //     "same_material": [ [ "<mat_code>", "<color>", ["T1A"], "<MaterialName>" ], ... ],
-    //     "T1".."T4": { "state":"connect|None", "remain_len":["45","100",..],
-    //                   "color_value":["0ffffff",..], "material_type":["006002",..] },
-    //     "t_command":"T2", ... }
-    //   `same_material` is the authoritative flat slot list for connected units: each entry carries
-    //   the material *name* (PLA/PETG/...), the color, and a slot label "T<unit><A..D>". The label
-    //   maps to a 0-based global tool index = (unit-1)*4 + ('A..D' index), matching the Tn tool
-    //   commands the slicer emits at colour changes (the `box` module registers Tn natively;
-    //   see `t_command`). Colors are 7-char "0RRGGBB" -> we keep the trailing 6 hex digits.
+    //     "same_material": [ [ "<mat_code>", "<color>", ["T1B","T1C"], "<MaterialName>" ], ... ],
+    //     "T1".."T4": { "state":"connect|None", "vender":["none","unknown",..], "remain_len":["-1","100",..],
+    //                   "color_value":["0ffffff",..], "material_type":["001001",..] }, ... }
+    //   Each unit's per-slot arrays are the source of truth. material_type / color_value /
+    //   same_material are LATCHED: they keep describing a spool long after it was pulled, so they
+    //   cannot say whether a bay is loaded. `vender` can: a real vendor or "unknown" while a spool
+    //   is seated, "none"/"-1" once it is pulled. Untagged spools may keep a sentinel vender, so a
+    //   bay with no RFID code at all still counts as loaded when the wheel reports a length.
+    //   same_material only supplies the material *name* for a code. Slot index = (unit-1)*4 + A..D,
+    //   matching the Tn tool commands the slicer emits. Colors "0RRGGBB" -> trailing 6 hex digits.
     slots.clear();
 
     auto norm_color = [](std::string c) -> std::string {
@@ -487,16 +492,7 @@ bool Moonraker::parse_cfs_slots(const std::string& object_name, const std::strin
         std::transform(c.begin(), c.end(), c.begin(), ::tolower);
         return c;
     };
-    auto label_to_global = [](const std::string& label, int& unit_out, int& global_out) -> bool {
-        // "T1A".."T4D"
-        if (label.size() < 3 || (label[0] != 'T' && label[0] != 't')) return false;
-        const int unit = label[1] - '0';
-        const int sidx = std::string("ABCD").find(static_cast<char>(::toupper(label[2])));
-        if (unit < 1 || unit > 4 || sidx < 0) return false;
-        unit_out   = unit;
-        global_out = (unit - 1) * 4 + sidx;
-        return true;
-    };
+    auto is_sentinel = [](const std::string& v) { return v.empty() || v == "none" || v == "None" || v == "-1"; };
 
     try {
         std::stringstream ss(body);
@@ -506,33 +502,17 @@ bool Moonraker::parse_cfs_slots(const std::string& object_name, const std::strin
         if (!box)
             return false;
 
-        // --- Primary source: same_material (has material names) ---
+        // Material code -> name, e.g. "001001" -> "PLA".
+        std::map<std::string, std::string> code_names;
         if (const auto same = box->get_child_optional("same_material")) {
             for (const auto& entry_kv : *same) {
-                // entry is itself a JSON array: [code, color, [label], name]
                 std::vector<const pt::ptree*> cols;
                 for (const auto& c : entry_kv.second) cols.push_back(&c.second);
-                if (cols.size() < 4) continue;
-                const std::string code  = cols[0]->get_value<std::string>(""); // Creality filamentId
-                const std::string color = norm_color(cols[1]->get_value<std::string>(""));
-                std::string label;
-                for (const auto& lbl : *cols[2]) { label = lbl.second.get_value<std::string>(""); break; }
-                const std::string name = cols[3]->get_value<std::string>("");
-
-                CFSSlot slot;
-                slot.label          = label;
-                slot.material_name  = name;
-                slot.material_code  = code;
-                slot.material_color = color;
-                slot.has_filament   = true;
-                int unit = 1, gid = 0;
-                if (label_to_global(label, unit, gid)) { slot.unit_id = unit; slot.slot_id = gid; }
-                else                                    slot.slot_id = static_cast<int>(slots.size());
-                slots.push_back(slot);
+                if (cols.size() >= 4)
+                    code_names[cols[0]->get_value<std::string>("")] = cols[3]->get_value<std::string>("");
             }
         }
 
-        // --- Enrich with / fall back to per-unit arrays (remain %, empty slots) ---
         for (int unit = 1; unit <= 4; ++unit) {
             const std::string ukey = "T" + std::to_string(unit);
             const auto unode = box->get_child_optional(ukey);
@@ -547,23 +527,24 @@ bool Moonraker::parse_cfs_slots(const std::string& object_name, const std::strin
                 return "";
             };
             for (int i = 0; i < 4; ++i) {
-                const int gid = (unit - 1) * 4 + i;
-                const std::string rl = col_at("remain_len", i);
-                const int remain = (rl.empty() || rl == "-1") ? -1 : atoi(rl.c_str());
-                auto it = std::find_if(slots.begin(), slots.end(),
-                                       [&](const CFSSlot& s){ return s.slot_id == gid; });
-                if (it != slots.end()) {
-                    it->remain = remain;                 // enrich existing
-                } else if (remain > 0) {
-                    CFSSlot slot;                        // present but absent from same_material
-                    slot.slot_id        = gid;
-                    slot.unit_id        = unit;
-                    slot.label          = ukey + static_cast<char>('A' + i);
-                    slot.material_color = norm_color(col_at("color_value", i));
-                    slot.remain         = remain;
-                    slot.has_filament   = true;
-                    slots.push_back(slot);
-                }
+                const std::string code   = col_at("material_type", i);
+                const std::string rl     = col_at("remain_len", i);
+                const int         remain = (rl.empty() || rl == "-1" || rl == "None") ? -1 : atoi(rl.c_str());
+                const bool tagged  = !is_sentinel(code) && code != "unknown";
+                const bool present = !is_sentinel(col_at("vender", i)) || (!tagged && remain > 0);
+                if (!present) continue;
+
+                CFSSlot slot;
+                slot.slot_id        = (unit - 1) * 4 + i;
+                slot.unit_id        = unit;
+                slot.label          = ukey + static_cast<char>('A' + i);
+                slot.material_code  = tagged ? code : "";
+                if (const auto it = code_names.find(code); tagged && it != code_names.end())
+                    slot.material_name = it->second;
+                slot.material_color = norm_color(col_at("color_value", i));
+                slot.remain         = remain;
+                slot.has_filament   = true;
+                slots.push_back(slot);
             }
         }
     } catch (const std::exception& ex) {
@@ -571,7 +552,6 @@ bool Moonraker::parse_cfs_slots(const std::string& object_name, const std::strin
         return false;
     }
 
-    std::sort(slots.begin(), slots.end(), [](const CFSSlot& a, const CFSSlot& b){ return a.slot_id < b.slot_id; });
     return !slots.empty();
 }
 
