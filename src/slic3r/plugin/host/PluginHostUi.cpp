@@ -272,7 +272,7 @@ auto run_on_ui_blocking(Fn&& fn) -> std::invoke_result_t<Fn&>
     struct Call
     {
         std::promise<R>  prom;
-        std::atomic<int> state{Pending};
+        std::atomic<int> state{0}; // Pending: MSVC 18 does not see the enclosing enum from this local struct
     };
     auto           call = std::make_shared<Call>();
     std::future<R> fut  = call->prom.get_future();
