@@ -50,6 +50,10 @@ public:
     virtual void EndModal(int ret) override;
     virtual void init();
     virtual std::map<std::string, std::string> extendedInfo() const { return {}; }
+    // Extra validation run by init()'s Upload / Upload and Print handlers, after the filename
+    // suffix check. Subclasses that add their own controls (e.g. filament-to-slot mapping)
+    // override this to block sending until their input is complete. Default: nothing to check.
+    virtual bool validate_before_send() { return true; }
 
 protected:
     wxTextCtrl *txt_filename;
@@ -319,7 +323,7 @@ private:
     const Slic3r::FlashforgeMaterialSlot* find_slot_by_id(const std::string& slot_id_text) const;
     const FilamentInfo* find_filament_by_tool_id(int tool_id) const;
     bool slot_matches_filament(const Slic3r::FlashforgeMaterialSlot& slot, const FilamentInfo& filament) const;
-    bool validate_before_close();
+    bool validate_before_send() override;
     std::string normalize_material(const std::string& material) const;
     // Resolve a CFS slot's Creality filamentId to an Orca filament preset id via the
     // material catalogue + preset bundle. Empty when unknown. Used to prefer an

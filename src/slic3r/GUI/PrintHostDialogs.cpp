@@ -1,4 +1,5 @@
 #include "PrintHostDialogs.hpp"
+#include <set>
 
 #include <algorithm>
 #include <boost/algorithm/string/trim.hpp>
@@ -566,7 +567,7 @@ void PrintHostSendDialog::init()
             if (msg_wingow.ShowModal() == wxID_NO)
                 return false;
         }
-        return true;
+        return validate_before_send();
     };
 
     auto* btn_ok = add_button(wxID_OK, true, _L("Upload"));
@@ -1255,54 +1256,21 @@ MoonrakerCFSPrintHostSendDialog::MoonrakerCFSPrintHostSendDialog(const fs::path&
 
 void MoonrakerCFSPrintHostSendDialog::init()
 {
-    const AppConfig* app_config = wxGetApp().app_config;
-    const auto&      path       = m_path;
-
-    // Default CFS mapping ON when the printer reports a CFS unit.
+    // Default the mapping to ON when the printer actually reports a CFS unit.
     m_use_cfs = m_supports_cfs;
 
+    // Filename field, directory hint, "switch to Device tab" checkbox and the
+    // Upload / Upload and Print / Cancel buttons are all built by the base dialog.
+    // We only append the CFS section below; validation is hooked through
+    // validate_before_send().
+    PrintHostSendDialog::init();
+
     this->SetMinSize(wxSize(560, 420));
-
-    auto* label_dir_hint = new wxStaticText(this, wxID_ANY, _L("Use forward slashes ( / ) as a directory separator if needed."));
-    label_dir_hint->Wrap(CONTENT_WIDTH * wxGetApp().em_unit());
-    content_sizer->Add(txt_filename, 0, wxEXPAND);
-    content_sizer->Add(label_dir_hint);
-    content_sizer->AddSpacer(VERT_SPACING);
-
-    wxString recent_path = from_u8(app_config->get("recent", CONFIG_KEY_PATH));
-    if (recent_path.Length() > 0 && recent_path[recent_path.Length() - 1] != '/')
-        recent_path += '/';
-    const auto recent_path_len = recent_path.Length();
-    recent_path += path.filename().wstring();
-    wxString stem(path.stem().wstring());
-    const auto stem_len = stem.Length();
-    txt_filename->SetValue(recent_path);
-
-    {
-        auto checkbox_sizer = new wxBoxSizer(wxHORIZONTAL);
-        auto checkbox       = new ::CheckBox(this, wxID_APPLY);
-        checkbox->SetValue(m_switch_to_device_tab);
-        checkbox->Bind(wxEVT_TOGGLEBUTTON, [this](wxCommandEvent& e) {
-            auto* source = dynamic_cast<::CheckBox*>(e.GetEventObject());
-            if (source != nullptr)
-                source->SetValue(e.IsChecked());
-            m_switch_to_device_tab = e.IsChecked();
-            e.Skip();
-        });
-        checkbox_sizer->Add(checkbox, 0, wxALL | wxALIGN_CENTER, FromDIP(2));
-
-        auto checkbox_text = new wxStaticText(this, wxID_ANY, _L("Switch to Device tab after upload."));
-        checkbox_text->SetFont(::Label::Body_13);
-        checkbox_text->SetForegroundColour(StateColor::darkModeColorFor(wxColour("#323A3D")));
-        checkbox_sizer->Add(checkbox_text, 0, wxALL | wxALIGN_CENTER, FromDIP(2));
-        content_sizer->Add(checkbox_sizer);
-        content_sizer->AddSpacer(VERT_SPACING);
-    }
 
     m_cfs_options_sizer = new wxBoxSizer(wxVERTICAL);
 
     {
-        auto row      = new wxBoxSizer(wxHORIZONTAL);
+        auto row       = new wxBoxSizer(wxHORIZONTAL);
         m_checkbox_cfs = new ::CheckBox(this);
         m_checkbox_cfs->SetValue(m_use_cfs);
         m_checkbox_cfs->Bind(wxEVT_TOGGLEBUTTON, [this](wxCommandEvent& e) {
@@ -1348,55 +1316,6 @@ void MoonrakerCFSPrintHostSendDialog::init()
 
     rebuild_mapping_rows();
     sync_mapping_section_visibility();
-
-    if (size_t extension_start = recent_path.find_last_of('.'); extension_start != std::string::npos)
-        m_valid_suffix = recent_path.substr(extension_start);
-
-    auto validate_path = [this](const wxString& filename) -> bool {
-        if (!filename.Lower().EndsWith(m_valid_suffix.Lower())) {
-            MessageDialog msg_wingow(this, wxString::Format(_L("Upload filename doesn't end with \"%s\". Do you wish to continue?"), m_valid_suffix),
-                                     wxString(SLIC3R_APP_NAME), wxYES | wxNO);
-            if (msg_wingow.ShowModal() == wxID_NO)
-                return false;
-        }
-        return validate_before_close();
-    };
-
-    auto* btn_ok = add_button(wxID_OK, true, _L("Upload"));
-    btn_ok->Bind(wxEVT_BUTTON, [this, validate_path](wxCommandEvent&) {
-        if (validate_path(txt_filename->GetValue())) {
-            post_upload_action = PrintHostPostUploadAction::None;
-            EndDialog(wxID_OK);
-        }
-    });
-
-    if (m_post_actions.has(PrintHostPostUploadAction::StartPrint)) {
-        auto* btn_print = add_button(wxID_YES, false, _L("Upload and Print"));
-        btn_print->Bind(wxEVT_BUTTON, [this, validate_path](wxCommandEvent&) {
-            if (validate_path(txt_filename->GetValue())) {
-                post_upload_action = PrintHostPostUploadAction::StartPrint;
-                EndDialog(wxID_OK);
-            }
-        });
-    }
-
-    add_button(wxID_CANCEL, false, _L("Cancel"));
-    finalize();
-    txt_filename->SetFocus();
-
-#ifdef __linux__
-    txt_filename->Bind(wxEVT_KILL_FOCUS, [this](wxEvent& e) {
-        e.Skip();
-        txt_filename->SetInsertionPoint(txt_filename->GetLastPosition());
-    }, txt_filename->GetId());
-#endif /* __linux__ */
-
-    Bind(wxEVT_SHOW, [=](const wxShowEvent&) {
-        CallAfter([=]() {
-            txt_filename->SetInsertionPoint(0);
-            txt_filename->SetSelection(recent_path_len, recent_path_len + stem_len);
-        });
-    });
 }
 
 void MoonrakerCFSPrintHostSendDialog::EndModal(int ret)
@@ -1554,6 +1473,9 @@ std::string MoonrakerCFSPrintHostSendDialog::resolve_slot_filament_id(const Slic
 
 void MoonrakerCFSPrintHostSendDialog::auto_assign_mappings()
 {
+    // Each physical slot can only feed one project filament, so remember what we hand out;
+    // otherwise two same-material filaments both grab the closest slot and one is left unmapped.
+    std::set<int> used_slot_ids;
     for (size_t idx = 0; idx < m_project_filaments.size() && idx < m_mapping_rows.size(); ++idx) {
         auto& filament = m_project_filaments[idx];
         auto* card     = as_ff_map_widget(m_mapping_rows[idx].card);
@@ -1571,6 +1493,8 @@ void MoonrakerCFSPrintHostSendDialog::auto_assign_mappings()
         for (size_t si = 0; si < m_slots.size(); ++si) {
             const auto& slot = m_slots[si];
             if (!slot.has_filament || !slot_matches_filament(slot, filament))
+                continue;
+            if (used_slot_ids.count(slot.slot_id) != 0)
                 continue;
 
             // Exact-product match: resolve the slot's filamentId to a preset and
@@ -1592,10 +1516,12 @@ void MoonrakerCFSPrintHostSendDialog::auto_assign_mappings()
             }
         }
 
-        if (best_slot != nullptr)
+        if (best_slot != nullptr) {
             card->set_slot_selection(best_slot->slot_id, to_wx_colour(best_slot->material_color));
-        else
+            used_slot_ids.insert(best_slot->slot_id);
+        } else {
             card->reset_slot();
+        }
 
         refresh_mapping_card(m_mapping_rows[idx]);
     }
@@ -1662,7 +1588,7 @@ bool MoonrakerCFSPrintHostSendDialog::slot_matches_filament(const Slic3r::Flashf
     return !project_material.empty() && !slot_material.empty() && project_material == slot_material;
 }
 
-bool MoonrakerCFSPrintHostSendDialog::validate_before_close()
+bool MoonrakerCFSPrintHostSendDialog::validate_before_send()
 {
     if (!m_use_cfs && m_project_filaments.size() > 1) {
         show_error(this, _L("This plate uses multiple materials. Enable CFS and assign each tool to a printer slot."));

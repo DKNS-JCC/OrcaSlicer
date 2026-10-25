@@ -174,6 +174,14 @@ bool Moonraker::get_storage(wxArrayString &storage_path, wxArrayString &storage_
 #endif
     .perform_sync();
 
+    //ORCA: with "gcodes" as the only valid target there is nothing to choose, so report
+    //      no storage and let the send dialog hide the picker; upload() already falls back
+    //      to the "gcodes" root.
+    if (storage_path.GetCount() <= 1) {
+        storage_path.Clear();
+        storage_name.Clear();
+        return false;
+    }
     return got_any;
 }
 
@@ -343,6 +351,34 @@ bool Moonraker::upload(PrintHostUpload upload_data, ProgressFn progress_fn, Erro
     // printer cannot start it, the error from this request is what the user sees.
     if (want_start && !uploaded_path.empty() && !moonraker_started_print) {
         wxString start_msg;
+        //ORCA-CFS: the "Use CFS" tick must reach the printer, not only the Tn remap: the printer's
+        //          CFS_ON / CFS_OFF macros (claude_custom.cfg) decide whether START_PRINT, Tn, pause,
+        //          resume and end go through the box. Unticked = filament already in the toolhead.
+        const std::string cfs = upload_data.extended("cfs_enabled");
+        if (!cfs.empty()) {
+            // Body is mandatory: Http with an empty POST body falls back to the file read callback and crashes.
+            pt::ptree script_tree;
+            script_tree.put("script", cfs == "1" ? "CFS_ON" : "CFS_OFF");
+            std::ostringstream script_ss;
+            pt::write_json(script_ss, script_tree, /*pretty=*/false);
+            auto http = Http::post(make_url("printer/gcode/script"));
+            set_auth(http);
+            bool ok = true;
+            http.header("Content-Type", "application/json")
+                .set_post_body(script_ss.str())
+                .on_error([&](std::string body, std::string error, unsigned status) {
+                    ok = false;
+                    start_msg = format_error(body, error, status);
+                })
+#ifdef WIN32
+                .ssl_revoke_best_effort(m_ssl_revoke_best_effort)
+#endif
+                .perform_sync();
+            if (!ok) {
+                error_fn(std::move(start_msg));
+                return false;
+            }
+        }
         if (!start_print(start_msg, uploaded_path)) {
             error_fn(std::move(start_msg));
             return false;
